@@ -6,5 +6,5 @@ import lombok.Data;
 public class CacheEntry<K, V>
 {
 	V value;
-	long createdNanoTime;
+	long updatedNanoTime;
 }
