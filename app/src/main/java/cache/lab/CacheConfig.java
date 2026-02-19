@@ -24,7 +24,7 @@ public class CacheConfig
 		this.maxStale = Duration.ofSeconds(30);
 		this.maxSize = 10;
 		this.ticker = DefaultTicker.INSTANCE;
-		this.executor = Executors.newSingleThreadExecutor();
+		this.executor = Executors.newFixedThreadPool(8);
 		this.refreshConcurrency = 8;
 	}
 

@@ -50,7 +50,6 @@ public class DefaultCacheTest
 							throw new RuntimeException(e);
 						}
 					});
-					System.out.println("x calculated by thread: " + Thread.currentThread().getName() + ": " + v);
 				}
 				finally
 				{
@@ -92,7 +91,7 @@ public class DefaultCacheTest
 			executorService.submit(() -> {
 				try
 				{
-					long v = (long) cache.get(valueForLoader, key -> {
+					cache.get(valueForLoader, key -> {
 						try
 						{
 							return veryHardAndResourcefulCalculation(valueForLoader);
@@ -102,7 +101,6 @@ public class DefaultCacheTest
 							throw new RuntimeException(e);
 						}
 					});
-					System.out.println("valueForLoader calculated by thread: " + Thread.currentThread().getName() + ": " + v);
 				}
 				finally
 				{
@@ -116,13 +114,10 @@ public class DefaultCacheTest
 		executorService.shutdown();
 
 		assert finished;
-
-		System.out.println("Time taken: " + Duration.ofNanos(System.nanoTime() - startTime).toMillis());
 	}
 
 	private long veryHardAndResourcefulCalculation(long x) throws InterruptedException
 	{
-		System.out.println("Starting the calculation for thread " + Thread.currentThread().getName());
 		Thread.sleep(1000);
 		return x * x * x;
 	}
