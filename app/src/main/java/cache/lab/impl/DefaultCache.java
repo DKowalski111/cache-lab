@@ -2,7 +2,6 @@ package cache.lab.impl;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 
 import cache.lab.CacheConfig;
@@ -12,12 +11,12 @@ import cache.lab.contract.Cache;
 public class DefaultCache<K, V> implements Cache<K, V>
 {
 	private final ConcurrentHashMap<K, CompletableFuture<CacheEntry<K, V>>> cache = new ConcurrentHashMap<>();
+	private final ConcurrentHashMap<K, CompletableFuture<CacheEntry<K, V>>> refreshes = new ConcurrentHashMap<>();
 	private final CacheConfig cacheConfig;
-	private final ReentrantLock lock = new ReentrantLock();
 
 	public DefaultCache()
 	{
-		cacheConfig = new CacheConfig();
+		this.cacheConfig = new CacheConfig();
 	}
 
 	public DefaultCache(final CacheConfig cacheConfig)
@@ -28,87 +27,94 @@ public class DefaultCache<K, V> implements Cache<K, V>
 	@Override
 	public V get(final K key, final Function<K, V> loader)
 	{
-		long now = System.nanoTime();
-		// CHECK WHETHER KEY EXISTS IN THE CACHE MAP
-		CompletableFuture<CacheEntry<K, V>> newEntry = new CompletableFuture<>();
-		CompletableFuture<CacheEntry<K, V>> existing = cache.putIfAbsent(key, newEntry);
-		if (existing == null)
+		final long now = cacheConfig.getTicker().read();
+
+		final CompletableFuture<CacheEntry<K, V>> initialFuture = new CompletableFuture<>();
+		final CompletableFuture<CacheEntry<K, V>> existingFuture = cache.putIfAbsent(key, initialFuture);
+
+		if (existingFuture == null)
 		{
-			// ENTRY DOES NOT EXIST
-			// IT IS ASSUMED, THAT IF TTL = 0 VALUE IS STILL RETURNED WHEN CALCULATED
-			V v = executeLoader(key, loader, newEntry);
-			System.out.println("Thread ID: " + Thread.currentThread().getName() + " - New v: " + v);
-			return v;
+			return loadIntoFuture(key, loader, initialFuture, now).getValue();
 		}
 
-		// CHECK TTL
-		CacheEntry<K, V> currentValue = existing.join();
-		long updatedNanoTime = currentValue.getUpdatedNanoTime();
+		final CacheEntry<K, V> existingEntry = existingFuture.join();
+		final long updated = existingEntry.getUpdatedNanoTime();
 
-		// IF IS FRESH
-		if (updatedNanoTime + cacheConfig.getTtl().toNanos() > now)
+		if (updated + cacheConfig.getTtl().toNanos() > now)
 		{
-			return currentValue.getValue();
+			return existingEntry.getValue();
 		}
 
-		// IF IS STALE
-		if (updatedNanoTime + cacheConfig.getMaxStale().toNanos() > now)
+		if (updated + cacheConfig.getMaxStale().toNanos() > now)
 		{
-			CompletableFuture<CacheEntry<K, V>> refreshRacer = new CompletableFuture<>();
-			refreshEntry(key, loader, refreshRacer, currentValue);
-
-			return currentValue.getValue();
+			triggerBackgroundRefreshIfNeeded(key, loader, existingFuture);
+			return existingEntry.getValue();
 		}
 
-		// HARD EXPIRED
-		CompletableFuture<CacheEntry<K, V>> refreshRacer = new CompletableFuture<>();
-		refreshEntry(key, loader, refreshRacer, currentValue);
-
-		return refreshRacer.join().getValue();
+		final CompletableFuture<CacheEntry<K, V>> refreshedFuture = triggerRefreshIfNeeded(key, loader, existingFuture);
+		return refreshedFuture.join().getValue();
 	}
 
-	private V executeLoader(K key, Function<K, V> loader, CompletableFuture<CacheEntry<K, V>> future)
+	private void triggerBackgroundRefreshIfNeeded(K key, Function<K,V> loader, CompletableFuture<CacheEntry<K,V>> currentFuture) {
+		refreshes.computeIfAbsent(key, k -> {
+			CompletableFuture<CacheEntry<K, V>> refreshFuture = new CompletableFuture<>();
+			cacheConfig.getExecutor().submit(() -> {
+				long now = cacheConfig.getTicker().read();
+				try {
+					V value = loader.apply(key);
+					CacheEntry<K,V> entry = new CacheEntry<>(value, now);
+					refreshFuture.complete(entry);
+
+					cache.replace(key, currentFuture, CompletableFuture.completedFuture(entry));
+				} catch (Exception e) {
+					cache.remove(key, currentFuture);
+					refreshFuture.completeExceptionally(e);
+				} finally {
+					refreshes.remove(key, refreshFuture);
+				}
+			});
+			return refreshFuture;
+		});
+	}
+
+	private CompletableFuture<CacheEntry<K, V>> triggerRefreshIfNeeded(
+			final K key,
+			final Function<K, V> loader,
+			final CompletableFuture<CacheEntry<K, V>> currentFuture)
+	{
+		final CompletableFuture<CacheEntry<K, V>> refreshFuture = new CompletableFuture<>();
+
+		final boolean won = cache.replace(key, currentFuture, refreshFuture);
+		if (won)
+		{
+			cacheConfig.getExecutor().submit(() -> {
+				final long now = cacheConfig.getTicker().read();
+				loadIntoFuture(key, loader, refreshFuture, now);
+			});
+			return refreshFuture;
+		}
+
+		return cache.get(key);
+	}
+
+	private CacheEntry<K, V> loadIntoFuture(
+			final K key,
+			final Function<K, V> loader,
+			final CompletableFuture<CacheEntry<K, V>> targetFuture,
+			final long now)
 	{
 		try
 		{
-			V value = loader.apply(key);
-			CacheEntry<K, V> cacheEntry = new CacheEntry<>();
-			cacheEntry.setValue(value);
-			cacheEntry.setUpdatedNanoTime(cacheConfig.getTicker().read());
-			future.complete(cacheEntry);
-			return value;
+			final V value = loader.apply(key);
+			final CacheEntry<K, V> entry = new CacheEntry<>(value, now);
+			targetFuture.complete(entry);
+			return entry;
 		}
 		catch (Exception e)
 		{
-			cache.remove(key, future);
-			future.completeExceptionally(e);
+			cache.remove(key, targetFuture);
+			targetFuture.completeExceptionally(e);
 			throw e;
-		}
-	}
-
-	private void refreshEntry(K key, Function<K, V> loader, CompletableFuture<CacheEntry<K, V>> refreshRacer, CacheEntry<K, V> currentValue)
-	{
-		boolean raceWon = currentValue.getIsBeingReloaded().compareAndSet(null, refreshRacer);
-		if (raceWon)
-		{
-			System.out.println("Thread won race: " + Thread.currentThread().getName());
-			cacheConfig.getExecutor().submit(() -> {
-				try
-				{
-					V v = executeLoader(key, loader, refreshRacer);
-					CacheEntry<K, V> newCacheEntry = new CacheEntry<>();
-					newCacheEntry.setValue(v);
-					newCacheEntry.setUpdatedNanoTime(cacheConfig.getTicker().read());
-				}
-				finally
-				{
-					currentValue.getIsBeingReloaded().compareAndSet(refreshRacer, null);
-				}
-			});
-		}
-		else
-		{
-			System.out.println("Thread didn't win race: " + Thread.currentThread().getName());
 		}
 	}
 
@@ -121,6 +127,15 @@ public class DefaultCache<K, V> implements Cache<K, V>
 	@Override
 	public void invalidateAll()
 	{
-		cache.forEach(cache::remove);
+		cache.clear();
+	}
+
+	public void shutdown() {
+		cacheConfig.getExecutor().shutdown();
+	}
+
+	public long size()
+	{
+		return cache.mappingCount();
 	}
 }
