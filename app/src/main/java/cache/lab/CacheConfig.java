@@ -22,7 +22,7 @@ public class CacheConfig
 	{
 		this.ttl = Duration.ofMinutes(10);
 		this.maxStale = Duration.ofSeconds(30);
-		this.maxSize = 10;
+		this.maxSize = 20;
 		this.ticker = DefaultTicker.INSTANCE;
 		this.executor = Executors.newFixedThreadPool(8);
 		this.refreshConcurrency = 8;

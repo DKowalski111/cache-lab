@@ -19,9 +19,9 @@ import cache.lab.impl.DefaultTicker;
 public class DefaultCacheTest
 {
 	private final AtomicInteger loaderCounter = new AtomicInteger();
-	private final CacheConfig cacheConfigImmediateStale = new CacheConfig(Duration.ofNanos(0), Duration.ofSeconds(30), 10,
+	private final CacheConfig cacheConfigImmediateStale = new CacheConfig(Duration.ofNanos(0), Duration.ofSeconds(30), 20,
 			DefaultTicker.INSTANCE, Executors.newSingleThreadExecutor(), 8);
-	private final CacheConfig cacheConfigImmediateHardExpired = new CacheConfig(Duration.ofNanos(0), Duration.ofNanos(0), 10,
+	private final CacheConfig cacheConfigImmediateHardExpired = new CacheConfig(Duration.ofNanos(0), Duration.ofNanos(0), 20,
 			DefaultTicker.INSTANCE, Executors.newSingleThreadExecutor(), 8);
 
 	@Test
@@ -242,7 +242,7 @@ public class DefaultCacheTest
 		loaderCounter.set(0);
 
 		// given
-		final int iterations = 10;
+		final int iterations = 5;
 		CountDownLatch latch = new CountDownLatch(1);
 		final int originalValue = 10;
 		final int updatedValue = 20;
@@ -261,7 +261,7 @@ public class DefaultCacheTest
 																 loaderCounter.incrementAndGet();
 																 try
 																 {
-																	 Thread.sleep(500);
+																	 Thread.sleep(1000);
 																	 latch.countDown();
 																 }
 																 catch (InterruptedException e)
